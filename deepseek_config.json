@@ -1,0 +1,41 @@
+{
+  "excel_path": "ceshi.xlsx",
+  "output_path": "结果.xlsx",
+  "prefix": "直接输出，无需解释：",
+  "mode": "fast",
+  "deep_think": true,
+  "smart_search": false,
+  "enable_context": false,
+  "context_col": "Unnamed: 0",
+  "question_col": "问题",
+  "context_label": "历史对话",
+  "question_label": "问题",
+  "browser_mode": "maximized",
+  "browser_width": 1920,
+  "browser_height": 1080,
+  "browser_x": 0,
+  "browser_y": 0,
+  "skip_login": false,
+  "enable_skip": false,
+  "skip_col": "Unnamed: 0",
+  "skip_values": "bad",
+  "skip_mark": "SKIPPED",
+  "font_family": "楷体",
+  "font_size": 12,
+  "window_geometry": "1295x836+1042+211",
+  "window_maximized": false,
+  "preset_prefixes": {
+    "默认指令3": "请扮演一名资深专家，给出深入分析。",
+    "测试保存": "测试保存",
+    "简单直接": "直接输出，无需解释：",
+    "预制1：": "直接输出，无需解释："
+  },
+  "active_filters": [
+    "处理进度",
+    "模型回答",
+    "系统报错",
+    "普通信息"
+  ],
+  "model_platform": "豆包",
+  "doubao_mode": "快速"
+}
