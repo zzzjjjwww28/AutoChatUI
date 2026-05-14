@@ -23,7 +23,7 @@ class DeepSeekGUI(ctk.CTk):
             self.geometry(win_geom)
         if self.config.get("window_maximized", False):
             self.state('zoomed')
-
+        self.loaded_columns = []
         # 加载预设前缀指令
         self.preset_prefixes = self.config.get("preset_prefixes", {
             "默认指令1": "请用简洁、专业的中文回答。",
@@ -221,12 +221,18 @@ class DeepSeekGUI(ctk.CTk):
             folder = abs_path
         if not folder or not os.path.exists(folder):
             folder = self.script_dir
-        if sys.platform == "win32":
-            os.startfile(folder)
-        elif sys.platform == "darwin":
-            subprocess.run(["open", folder])
-        else:
-            subprocess.run(["xdg-open", folder])
+            if not os.path.exists(folder):
+                messagebox.showwarning("提示", f"文件夹不存在：{folder}")
+                return
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(['explorer', folder])
+            elif sys.platform == "darwin":
+                subprocess.Popen(['open', folder])
+            else:
+                subprocess.Popen(['xdg-open', folder])
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开文件夹：{e}")
 
     # ---------- 日志筛选 ----------
     def _show_filter_dialog(self):
@@ -278,6 +284,7 @@ class DeepSeekGUI(ctk.CTk):
         for entry in self.log_entries:
             if self._should_show_log(entry):
                 self._add_log_widget(entry)
+        self.log_list.update_idletasks()
         if hasattr(self.log_list, '_parent_canvas'):
             self.log_list._parent_canvas.configure(scrollregion=self.log_list._parent_canvas.bbox("all"))
         if self.auto_scroll_var.get():
@@ -297,8 +304,9 @@ class DeepSeekGUI(ctk.CTk):
                             fg_color=color, text_color="white" if ctk.get_appearance_mode() != "Dark" else "black",
                             hover_color="gray50",
                             command=lambda e=entry: self.show_detail(e))
-        btn.pack(fill="x", padx=5, pady=2)
+        btn.pack(fill="x", padx=5, pady=2, expand=False)
         self.log_widgets.append(btn)
+        self.log_list.update_idletasks()
         if hasattr(self.log_list, '_parent_canvas'):
             self.log_list._parent_canvas.configure(scrollregion=self.log_list._parent_canvas.bbox("all"))
         if self.auto_scroll_var.get():
@@ -313,7 +321,7 @@ class DeepSeekGUI(ctk.CTk):
         if not os.path.exists(entry.image_path):
             return
         frame = ctk.CTkFrame(self.image_scroll_frame, fg_color="transparent")
-        frame.pack(fill="x", padx=5, pady=5)
+        frame.pack(fill="x", padx=5, pady=5, expand=False)
 
         title = entry.brief if entry.brief else "截图"
         if entry.index is not None:
@@ -324,9 +332,9 @@ class DeepSeekGUI(ctk.CTk):
         try:
             img = Image.open(entry.image_path)
             img.thumbnail((300, 200))
-            photo = ImageTk.PhotoImage(img)
-            img_label = ctk.CTkLabel(frame, image=photo, text="")
-            img_label.image = photo
+            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(img.width, img.height))
+            img_label = ctk.CTkLabel(frame, image=ctk_img, text="")
+            img_label.image = ctk_img
             img_label.pack(pady=5)
             img_label.bind("<Double-Button-1>", lambda e, path=entry.image_path: self.view_image_big(path))
         except Exception as e:
@@ -335,10 +343,15 @@ class DeepSeekGUI(ctk.CTk):
 
         def del_this():
             frame.destroy()
+            self.image_scroll_frame.update_idletasks()
+            if hasattr(self.image_scroll_frame, '_parent_canvas'):
+                self.image_scroll_frame._parent_canvas.configure(scrollregion=self.image_scroll_frame._parent_canvas.bbox("all"))
         del_btn = ctk.CTkButton(frame, text="✖", width=30, height=30, fg_color="gray", hover_color="red", command=del_this)
         del_btn.pack(anchor="ne", padx=5)
 
-        self.image_scroll_frame._parent_canvas.yview_moveto(1.0)
+        self.image_scroll_frame.update_idletasks()
+        if hasattr(self.image_scroll_frame, '_parent_canvas'):
+            self.image_scroll_frame._parent_canvas.yview_moveto(1.0)
 
     def _clear_images(self):
         children = list(self.image_scroll_frame.winfo_children())
@@ -370,16 +383,30 @@ class DeepSeekGUI(ctk.CTk):
         row += 1
 
         self.enable_context = ctk.BooleanVar(value=self.config.get("enable_context", True))
-        self.context_cb = ctk.CTkCheckBox(tab, text="启用上下文（双列模式）", variable=self.enable_context, command=self.toggle_context)
+        self.context_cb = ctk.CTkCheckBox(tab, text="启用上下文（附加列）", variable=self.enable_context, command=self.toggle_context)
         self.context_cb.grid(row=row, column=0, columnspan=2, padx=5, sticky="w")
         row += 1
 
-        ctk.CTkLabel(tab, text="上下文列:").grid(row=row, column=0, padx=5, sticky="w")
+        # ---------- 附加列1 ----------
+        ctk.CTkLabel(tab, text="附加列1:").grid(row=row, column=0, padx=5, sticky="w")
         self.context_col_var = ctk.StringVar(value=self.config.get("context_col", ""))
         self.context_menu = ctk.CTkOptionMenu(tab, variable=self.context_col_var, values=["请先加载列名"])
         self.context_menu.grid(row=row, column=1, padx=5, pady=5, sticky="ew")
         self.context_label_var = ctk.StringVar(value=self.config.get("context_label", "历史对话"))
-        ctk.CTkEntry(tab, textvariable=self.context_label_var, width=80).grid(row=row, column=2, padx=5)
+        self.context_entry = ctk.CTkEntry(tab, textvariable=self.context_label_var, width=80)
+        self.context_entry.grid(row=row, column=2, padx=5)
+        self.row1_widgets = [self.context_menu, self.context_entry]  # 用于隐藏/显示
+        row += 1
+
+        # ---------- 附加列2 (新增) ----------
+        ctk.CTkLabel(tab, text="附加列2:").grid(row=row, column=0, padx=5, sticky="w")
+        self.context_col2_var = ctk.StringVar(value=self.config.get("context_col2", ""))
+        self.context_menu2 = ctk.CTkOptionMenu(tab, variable=self.context_col2_var, values=["请先加载列名"])
+        self.context_menu2.grid(row=row, column=1, padx=5, pady=5, sticky="ew")
+        self.context_label2_var = ctk.StringVar(value=self.config.get("context_label2", ""))
+        self.context_entry2 = ctk.CTkEntry(tab, textvariable=self.context_label2_var, width=80)
+        self.context_entry2.grid(row=row, column=2, padx=5)
+        self.row2_widgets = [self.context_menu2, self.context_entry2]
         row += 1
 
         ctk.CTkLabel(tab, text="问题列:").grid(row=row, column=0, padx=5, sticky="w")
@@ -424,28 +451,22 @@ class DeepSeekGUI(ctk.CTk):
         tab = self.tabview.tab("模型设置")
         tab.grid_columnconfigure(0, weight=1)
 
-        # 模型平台选择
         ctk.CTkLabel(tab, text="模型平台:", anchor="w").pack(pady=5, padx=10, fill="x")
         self.platform_var = ctk.StringVar(value=self.config.get("model_platform", "DeepSeek"))
         platform_menu = ctk.CTkOptionMenu(tab, variable=self.platform_var, values=["DeepSeek", "豆包"], width=150,
                                           command=self._on_platform_changed)
         platform_menu.pack(pady=5)
 
-        # 用于存放动态控件的容器
         self.model_specific_frame = ctk.CTkFrame(tab, fg_color="transparent")
         self.model_specific_frame.pack(fill="x", pady=10)
 
-        # 初始化当前平台的控件
         self._on_platform_changed(self.platform_var.get())
 
     def _on_platform_changed(self, platform):
-        """根据平台动态显示不同的模型设置控件"""
-        # 清空原有控件
         for widget in self.model_specific_frame.winfo_children():
             widget.destroy()
 
         if platform == "DeepSeek":
-            # DeepSeek 的快速/专家模式 + 深度思考/智能搜索
             ctk.CTkLabel(self.model_specific_frame, text="模型模式 (快速更短，专家更详细)").pack(pady=5)
             self.mode_var = ctk.StringVar(value=self.config.get("mode", "expert"))
             mode_frame = ctk.CTkFrame(self.model_specific_frame, fg_color="transparent")
@@ -463,7 +484,6 @@ class DeepSeekGUI(ctk.CTk):
             ctk.CTkCheckBox(self.model_specific_frame, text="智能搜索", variable=self.search_var).pack(pady=5)
 
         elif platform == "豆包":
-            # 豆包的模式：快速 / 思考 / 专家
             ctk.CTkLabel(self.model_specific_frame, text="豆包模式:", anchor="w").pack(pady=5, fill="x")
             self.doubao_mode_var = ctk.StringVar(value=self.config.get("doubao_mode", "快速"))
             mode_menu = ctk.CTkOptionMenu(self.model_specific_frame, variable=self.doubao_mode_var,
@@ -505,7 +525,9 @@ class DeepSeekGUI(ctk.CTk):
 
         ctk.CTkLabel(tab, text="窗口模式:").pack(pady=5)
         self.browser_mode_var = ctk.StringVar(value=self.config.get("browser_mode", "maximized"))
-        self.browser_menu = ctk.CTkOptionMenu(tab, variable=self.browser_mode_var, values=["maximized", "minimized", "custom"], command=self.on_browser_mode_change)
+        self.browser_menu = ctk.CTkOptionMenu(tab, variable=self.browser_mode_var,
+                                              values=["maximized", "minimized", "custom"],
+                                              command=self.on_browser_mode_change)
         self.browser_menu.pack(pady=5)
 
         self.custom_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -526,12 +548,23 @@ class DeepSeekGUI(ctk.CTk):
         ctk.CTkLabel(self.custom_frame, text="Y:").pack(side="left", padx=2)
         self.y_entry = ctk.CTkEntry(self.custom_frame, textvariable=self.y_var, width=60)
         self.y_entry.pack(side="left", padx=2)
-        self.on_browser_mode_change()
+
+        self.move_to_screen_out = ctk.BooleanVar(value=self.config.get("move_to_screen_out", False))
+        ctk.CTkCheckBox(tab, text="将浏览器窗口移出屏幕（后台运行模式）", variable=self.move_to_screen_out).pack(pady=5)
 
     # ---------- 联动 ----------
     def toggle_context(self):
-        state = "normal" if self.enable_context.get() else "disabled"
-        self.context_menu.configure(state=state)
+        visible = self.enable_context.get()
+        for w in self.row1_widgets:
+            if visible:
+                w.grid()
+            else:
+                w.grid_remove()
+        for w in self.row2_widgets:
+            if visible:
+                w.grid()
+            else:
+                w.grid_remove()
 
     def toggle_skip(self):
         state = "normal" if self.enable_skip.get() else "disabled"
@@ -539,9 +572,7 @@ class DeepSeekGUI(ctk.CTk):
         self.skip_values_entry.configure(state=state)
 
     def on_browser_mode_change(self, *args):
-        state = "normal" if self.browser_mode_var.get() == "custom" else "disabled"
-        for child in self.custom_frame.winfo_children():
-            child.configure(state=state)
+        pass
 
     # ---------- 文件选择 ----------
     def browse_file(self):
@@ -565,15 +596,19 @@ class DeepSeekGUI(ctk.CTk):
             if not cols:
                 raise ValueError("表头为空")
             self.context_menu.configure(values=cols)
+            self.context_menu2.configure(values=cols)  # 新增
             self.ques_menu.configure(values=cols)
             self.skip_menu.configure(values=cols)
             if cols:
                 if self.context_col_var.get() not in cols:
                     self.context_col_var.set(cols[0])
+                if self.context_col2_var.get() not in cols:
+                    self.context_col2_var.set("")  # 默认不选
                 if self.ques_col_var.get() not in cols:
                     self.ques_col_var.set(cols[1] if len(cols) > 1 else cols[0])
                 if self.skip_col_var.get() not in cols:
                     self.skip_col_var.set(cols[0] if cols else "")
+            self.loaded_columns = cols  # 新增这一行
             self.add_log(LogEntry(f"已加载列名：{', '.join(cols)}"))
         except Exception as e:
             messagebox.showerror("加载列名失败", str(e))
@@ -688,12 +723,10 @@ class DeepSeekGUI(ctk.CTk):
 
         self._save_current_config()
 
-        # 清空图片历史
         for child in self.image_scroll_frame.winfo_children():
             if child != self.image_scroll_frame.winfo_children()[0]:
                 child.destroy()
 
-        # 读取 Excel & 断点续传
         try:
             if os.path.exists(output):
                 df = pd.read_excel(output, sheet_name=0)
@@ -736,7 +769,6 @@ class DeepSeekGUI(ctk.CTk):
             messagebox.showerror("Excel 读取失败", str(e))
             return
 
-        # 重置监控
         self.log_entries.clear()
         for w in self.log_widgets:
             w.destroy()
@@ -754,13 +786,11 @@ class DeepSeekGUI(ctk.CTk):
         self.stop_event.clear()
         self.login_confirmed.clear()
 
-        # 创建日志子目录
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         self.current_log_dir = os.path.join(self.base_log_dir, f"logs_{timestamp}")
         os.makedirs(self.current_log_dir, exist_ok=True)
         self._update_info_panel()
 
-        # 收集模型特定参数
         model_args = {}
         platform = self.platform_var.get()
         if platform == "DeepSeek":
@@ -774,30 +804,43 @@ class DeepSeekGUI(ctk.CTk):
                 "doubao_mode": self.doubao_mode_var.get()
             }
 
+        # 构建附加列配置（只传递启用的列）
+        additional_cols = []
+        if self.enable_context.get():
+            if self.context_col_var.get().strip():
+                additional_cols.append({
+                    "col": self.context_col_var.get(),
+                    "label": self.context_label_var.get()
+                })
+            if self.context_col2_var.get().strip():
+                additional_cols.append({
+                    "col": self.context_col2_var.get(),
+                    "label": self.context_label2_var.get()
+                })
+
         self.worker = WorkerThread(
             excel,
-            self.context_col_var.get() if self.enable_context.get() else None,
-            self.ques_col_var.get(),
+            self.ques_col_var.get(),         # question_col
             output,
             self.prefix_box.get("1.0", "end-1c"),
-            self.context_label_var.get(),
             self.ques_label_var.get(),
-            self.enable_context.get(),
-            self.browser_mode_var.get(),
-            int(self.width_var.get()) if self.width_var.get().isdigit() else 1920,
-            int(self.height_var.get()) if self.height_var.get().isdigit() else 1080,
-            int(self.x_var.get()) if self.x_var.get().isdigit() else 0,
-            int(self.y_var.get()) if self.y_var.get().isdigit() else 0,
-            self.log_queue,
-            self.stop_event,
-            self.current_log_dir,
-            self.skip_login_var.get(),
-            self.enable_skip.get(),
-            self.skip_col_var.get() if self.enable_skip.get() else None,
-            self.skip_values_var.get(),
-            self.skip_mark_var.get(),
+            additional_cols=additional_cols,  # 新参数
+            browser_mode=self.browser_mode_var.get(),
+            browser_width=int(self.width_var.get()) if self.width_var.get().isdigit() else 1920,
+            browser_height=int(self.height_var.get()) if self.height_var.get().isdigit() else 1080,
+            browser_x=int(self.x_var.get()) if self.x_var.get().isdigit() else 0,
+            browser_y=int(self.y_var.get()) if self.y_var.get().isdigit() else 0,
+            log_queue=self.log_queue,
+            stop_event=self.stop_event,
+            log_dir=self.current_log_dir,
+            skip_login=self.skip_login_var.get(),
+            enable_skip=self.enable_skip.get(),
+            skip_col=self.skip_col_var.get() if self.enable_skip.get() else None,
+            skip_values=self.skip_values_var.get(),
+            skip_mark=self.skip_mark_var.get(),
             platform=platform,
-            model_args=model_args
+            model_args=model_args,
+            move_to_screen_out=self.move_to_screen_out.get()
         )
         self.worker.start_idx = start_idx
         self.worker.existing_df = df
@@ -812,6 +855,7 @@ class DeepSeekGUI(ctk.CTk):
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.status_title.configure(text="状态：执行中...", text_color="blue")
+
 
     # ---------- 预设指令管理 ----------
     def _insert_preset_prefix(self):
@@ -976,10 +1020,19 @@ class DeepSeekGUI(ctk.CTk):
     def _on_enable_skip_changed(self):
         self.toggle_skip()
         if self.enable_skip.get():
-            if self.file_var.get():
-                self.load_columns()
+            if self.loaded_columns:
+                # 直接用缓存的列名更新下拉菜单，不再重复读取文件
+                self.skip_menu.configure(values=self.loaded_columns)
+                self.context_menu.configure(values=self.loaded_columns)
+                self.context_menu2.configure(values=self.loaded_columns)
+                self.ques_menu.configure(values=self.loaded_columns)
+                # 如果当前 skip_col 不在列表中，设置为第一个
+                if self.skip_col_var.get() not in self.loaded_columns and self.loaded_columns:
+                    self.skip_col_var.set(self.loaded_columns[0])
             else:
-                messagebox.showinfo("提示", "请先选择 Excel 文件，然后再次勾选以加载列名")
+                # 没有缓存，提示先加载列名
+                messagebox.showinfo("提示", "请先点击“加载列名”按钮加载 Excel 列名")
+
 
     def _refresh_preset_menu(self):
         self.preset_names = list(self.preset_prefixes.keys())
@@ -995,8 +1048,10 @@ class DeepSeekGUI(ctk.CTk):
             "prefix": self.prefix_box.get("1.0", "end-1c"),
             "enable_context": self.enable_context.get(),
             "context_col": self.context_col_var.get(),
-            "question_col": self.ques_col_var.get(),
             "context_label": self.context_label_var.get(),
+            "context_col2": self.context_col2_var.get(),
+            "context_label2": self.context_label2_var.get(),
+            "question_col": self.ques_col_var.get(),
             "question_label": self.ques_label_var.get(),
             "browser_mode": self.browser_mode_var.get(),
             "browser_width": int(self.width_var.get()) if self.width_var.get().isdigit() else 1920,
@@ -1011,19 +1066,30 @@ class DeepSeekGUI(ctk.CTk):
             "preset_prefixes": self.preset_prefixes,
             "active_filters": self.active_filters,
             "model_platform": self.platform_var.get(),
+            "move_to_screen_out": self.move_to_screen_out.get(),
             "window_geometry": self.config.get("window_geometry", "1200x750"),
             "window_maximized": self.config.get("window_maximized", False)
         }
-        # 添加平台特有的配置
+
+        # 构建附加列配置（兼容保存为列表）
+        additional_cols = []
+        if self.enable_context.get():
+            if self.context_col_var.get().strip():
+                additional_cols.append({"col": self.context_col_var.get(), "label": self.context_label_var.get()})
+            if self.context_col2_var.get().strip():
+                additional_cols.append({"col": self.context_col2_var.get(), "label": self.context_label2_var.get()})
+        config_update["additional_cols"] = additional_cols
+
+        # 模型平台相关
         if self.platform_var.get() == "DeepSeek":
             config_update["mode"] = self.mode_var.get()
             config_update["deep_think"] = self.deep_var.get()
             config_update["smart_search"] = self.search_var.get()
         elif self.platform_var.get() == "豆包":
             config_update["doubao_mode"] = self.doubao_mode_var.get()
+
         self.config.update(config_update)
         save_config(self.config)
-
     def on_closing(self):
         if self.state() == 'zoomed':
             self.config["window_maximized"] = True

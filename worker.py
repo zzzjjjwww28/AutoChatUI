@@ -31,23 +31,22 @@ def take_screenshot(driver, log_dir, name):
 
 
 class WorkerThread(threading.Thread):
-    def __init__(self, excel_path, context_col, question_col, output_path,
-                 prefix, context_label, question_label, has_context,
-                 browser_mode, browser_width=None, browser_height=None,
+    def __init__(self, excel_path, question_col, output_path,
+                 prefix, question_label,
+                 additional_cols=None,            # 改为接收列表
+                 browser_mode="maximized", browser_width=None, browser_height=None,
                  browser_x=None, browser_y=None,
                  log_queue=None, stop_event=None,
                  log_dir=None, skip_login=False,
                  enable_skip=False, skip_col=None, skip_values=None, skip_mark="SKIPPED",
-                 platform="DeepSeek", model_args=None):
+                 platform="DeepSeek", model_args=None, move_to_screen_out=False):
         super().__init__(daemon=True)
         self.excel_path = excel_path
-        self.context_col = context_col
         self.question_col = question_col
         self.output_path = output_path
         self.prefix = prefix
-        self.context_label = context_label
         self.question_label = question_label
-        self.has_context = has_context
+        self.additional_cols = additional_cols or []  # 列表，元素: {"col": "列名", "label": "标签"}
         self.browser_mode = browser_mode
         self.browser_width = browser_width or 1920
         self.browser_height = browser_height or 1080
@@ -67,6 +66,7 @@ class WorkerThread(threading.Thread):
         self.existing_df = None
         self.platform = platform
         self.model_args = model_args or {}
+        self.move_to_screen_out = move_to_screen_out
 
         # 文件日志
         self.file_logger = None
@@ -105,7 +105,6 @@ class WorkerThread(threading.Thread):
 
     def run(self):
         self.log(LogEntry("Worker 线程已启动", level="info"))
-        # 读取或复用 DataFrame
         if self.existing_df is not None:
             df = self.existing_df
             if self.enable_skip and self.skip_col:
@@ -127,26 +126,25 @@ class WorkerThread(threading.Thread):
                 return
         self.total = len(df)
 
-        # 检查必要列
+        # 检查必需列和附加列
         missing = []
-        if self.has_context and self.context_col not in df.columns:
-            missing.append(self.context_col)
         if self.question_col not in df.columns:
             missing.append(self.question_col)
         if self.enable_skip and self.skip_col and self.skip_col not in df.columns:
             missing.append(f"跳过列 '{self.skip_col}'")
+        for col_cfg in self.additional_cols:
+            if col_cfg["col"] not in df.columns:
+                missing.append(f"附加列 '{col_cfg['col']}'")
         if missing:
             self.log(LogEntry("Excel 缺少列", f"缺少：{', '.join(missing)}", level="error"))
             self.close_file_logger()
             return
 
-        # 统计跳过数量
         total_skipped = 0
         for idx in range(self.start_idx, self.total):
             if self.should_skip_row(df, idx):
                 total_skipped += 1
 
-        # 判断是否需要浏览器
         need_browser = False
         skip_count = 0
         for idx in range(self.start_idx, self.total):
@@ -184,18 +182,15 @@ class WorkerThread(threading.Thread):
                 elif self.browser_mode == "custom":
                     self.driver.set_window_rect(self.browser_x, self.browser_y, self.browser_width, self.browser_height)
 
-                # 根据平台打开不同网址
                 if self.platform == "DeepSeek":
                     self.driver.get("https://chat.deepseek.com/")
-                else:  # 豆包
-                    self.driver.get("https://www.doubao.com/chat/")   # 请确认豆包实际聊天页面URL
-
+                else:
+                    self.driver.get("https://www.doubao.com/chat/")
             except Exception as e:
                 self.log(LogEntry("浏览器启动失败", str(e), level="error"))
                 self.close_file_logger()
                 return
 
-            # 登录等待
             if not self.skip_login:
                 self.log(LogEntry("请手动登录，然后点击“确认已登录”按钮", level="special"))
                 self.log_queue.put(LogEntry("WAIT_LOGIN", level="special"))
@@ -206,29 +201,29 @@ class WorkerThread(threading.Thread):
                         return
                     time.sleep(0.2)
                 self.log(LogEntry("用户已确认登录", level="info"))
-                try:
-                    self.driver.set_window_rect(-2000, -2000, 800, 600)
-                    self.log(LogEntry("浏览器窗口已移至屏幕外", level="info"))
-                except Exception as e:
-                    self.log(LogEntry(f"移动窗口失败: {e}", level="warn"))
+                if self.move_to_screen_out and self.browser_mode != "maximized":
+                    try:
+                        self.driver.set_window_rect(-2000, -2000, 800, 600)
+                        self.log(LogEntry("浏览器窗口已移至屏幕外（后台运行模式）", level="info"))
+                    except Exception as e:
+                        self.log(LogEntry(f"移动窗口失败: {e}", level="warn"))
             else:
                 self.log(LogEntry("跳过登录检查，直接开始执行", level="info"))
                 time.sleep(3)
-                try:
-                    self.driver.set_window_rect(-2000, -2000, 800, 600)
-                except:
-                    pass
+                if self.move_to_screen_out and self.browser_mode != "maximized":
+                    try:
+                        self.driver.set_window_rect(-2000, -2000, 800, 600)
+                        self.log(LogEntry("浏览器窗口已移至屏幕外（后台运行模式）", level="info"))
+                    except:
+                        pass
 
             self.log(LogEntry("开始执行自动化..."))
-
-            # 根据平台执行不同的自动化逻辑
             if self.platform == "DeepSeek":
                 self._deepseek_automation(df)
             else:
                 self._doubao_automation(df)
 
         else:
-            # 没有需要处理的行，直接完成
             self.log(LogEntry("没有需要处理的新行", level="info"))
 
         self.log(LogEntry(f"全部完成！结果已保存至 {self.output_path}", file_path=self.output_path))
@@ -239,7 +234,6 @@ class WorkerThread(threading.Thread):
 
     # ----------------------------- DeepSeek 自动化 -----------------------------
     def _deepseek_automation(self, df):
-        # 创建新对话
         try:
             new_chat = self.driver.find_element(By.XPATH, "//button[contains(.,'新对话') or contains(@aria-label,'新对话')]")
             new_chat.click()
@@ -248,11 +242,9 @@ class WorkerThread(threading.Thread):
         except:
             self.log(LogEntry("未找到“新对话”按钮", level="warn"))
 
-        # 设置模式
         self._deepseek_set_model_mode()
         self._deepseek_set_toggles()
 
-        # 逐条处理
         total_skipped = sum(1 for idx in range(self.start_idx, self.total) if self.should_skip_row(df, idx))
         skip_count = 0
         for idx in range(self.start_idx, self.total):
@@ -277,16 +269,12 @@ class WorkerThread(threading.Thread):
                 continue
 
             row = df.iloc[idx]
-            context = str(row[self.context_col]) if self.has_context and self.context_col else None
-            question = str(row[self.question_col])
-            prompt = self._format_prompt(context, question)
-
+            prompt = self._format_prompt(row)
             self.log(LogEntry(f"处理第 {idx+1}/{self.total} 条",
                               f"完整提示词：\n{prompt}",
                               level="progress", group="progress_start", index=idx))
 
             try:
-                # 输入并发送
                 ta = self._deepseek_get_textarea()
                 self._deepseek_fill_textarea(ta, prompt)
                 ss_after_fill = take_screenshot(self.driver, self.log_dir, f"after_fill_idx{idx}")
@@ -492,26 +480,15 @@ class WorkerThread(threading.Thread):
 
     # ----------------------------- 豆包自动化 -----------------------------
     def _doubao_automation(self, df):
-        # 等待页面加载完成
         time.sleep(3)
-        # 尝试找到输入框（常见的豆包输入框样式）
-        textarea = None
-        try:
-            textarea = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "textarea.semi-input-textarea, textarea[placeholder*='发消息']"))
-            )
-        except:
-            try:
-                textarea = self.driver.find_element(By.TAG_NAME, "textarea")
-            except:
-                self.log(LogEntry("未找到输入框", level="error"))
-                return
+        textarea = self._doubao_get_textarea()
+        if not textarea:
+            self.log(LogEntry("未找到输入框，无法继续", level="error"))
+            return
 
-        # 设置豆包模式（快速/思考/专家）
         doubao_mode = self.model_args.get("doubao_mode", "快速")
         self._doubao_set_mode(doubao_mode)
 
-        # 逐条处理
         total_skipped = sum(1 for idx in range(self.start_idx, self.total) if self.should_skip_row(df, idx))
         skip_count = 0
         for idx in range(self.start_idx, self.total):
@@ -536,20 +513,16 @@ class WorkerThread(threading.Thread):
                 continue
 
             row = df.iloc[idx]
-            context = str(row[self.context_col]) if self.has_context and self.context_col else None
-            question = str(row[self.question_col])
-            prompt = self._format_prompt(context, question)
+            prompt = self._format_prompt(row)
 
             self.log(LogEntry(f"处理第 {idx+1}/{self.total} 条",
                               f"完整提示词：\n{prompt}",
                               level="progress", group="progress_start", index=idx))
 
             try:
-                # 清空并输入
                 self.driver.execute_script("arguments[0].value = '';", textarea)
                 time.sleep(0.3)
                 self.driver.execute_script("arguments[0].value = arguments[1];", textarea, prompt)
-                # 触发 input 事件
                 self.driver.execute_script("var evt = new Event('input', { bubbles: true }); arguments[0].dispatchEvent(evt);", textarea)
                 time.sleep(0.5)
 
@@ -557,14 +530,12 @@ class WorkerThread(threading.Thread):
                 if ss_after_fill:
                     self.log(LogEntry("填入提示词后截图", image_path=ss_after_fill, level="info", group="progress_detail", index=idx))
 
-                # 发送消息
                 self._doubao_send()
                 time.sleep(1)
                 ss_after_send = take_screenshot(self.driver, self.log_dir, f"doubao_send_idx{idx}")
                 if ss_after_send:
                     self.log(LogEntry("点击发送后截图", image_path=ss_after_send, level="info", group="progress_detail", index=idx))
 
-                # 等待回答
                 answer = self._doubao_wait_for_answer(idx)
                 df.at[idx, "回答"] = answer
                 self.log(LogEntry("模型回答", answer, level="info", group="progress_detail", index=idx))
@@ -581,10 +552,27 @@ class WorkerThread(threading.Thread):
 
         df.to_excel(self.output_path, index=False)
 
-    def _doubao_set_mode(self, mode):
-        """豆包的模式切换：点击当前显示模式的按钮，然后在下拉菜单中选择"""
+    def _doubao_get_textarea(self):
         try:
-            # 定位模式选择按钮（显示“快速”等文字）
+            ta = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "textarea[placeholder*='发消息']"))
+            )
+            return ta
+        except:
+            pass
+        try:
+            ta = self.driver.find_element(By.CSS_SELECTOR, "textarea.semi-input-textarea")
+            return ta
+        except:
+            pass
+        try:
+            ta = self.driver.find_element(By.TAG_NAME, "textarea")
+            return ta
+        except:
+            return None
+
+    def _doubao_set_mode(self, mode):
+        try:
             mode_btn = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, "//button[contains(@class,'skill-bar-button')]//div[contains(text(),'快速') or contains(text(),'思考') or contains(text(),'专家')]"))
             )
@@ -593,9 +581,10 @@ class WorkerThread(threading.Thread):
                 self.log(LogEntry(f"豆包模式已经是 {mode}"))
                 return
             mode_btn.click()
-            time.sleep(0.5)
-            # 选择目标模式
-            target = self.driver.find_element(By.XPATH, f"//div[@role='menu']//div[contains(text(),'{mode}')]")
+            time.sleep(0.8)
+            target = WebDriverWait(self.driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, f"//div[@role='menu']//div[@role='menuitem']//div[contains(text(),'{mode}')]"))
+            )
             target.click()
             self.log(LogEntry(f"已切换豆包模式至：{mode}"))
             time.sleep(0.5)
@@ -603,24 +592,27 @@ class WorkerThread(threading.Thread):
             self.log(LogEntry(f"设置豆包模式失败: {e}", level="warn"))
 
     def _doubao_send(self):
-        # 尝试多种发送按钮定位
+        # 等待发送按钮可用（文本框填入内容后才会出现）
         try:
-            send_btn = self.driver.find_element(By.XPATH, "//button[@aria-label='发送']")
+            send_btn = WebDriverWait(self.driver, 5).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "button[id='flow-end-msg-send'], button[class*='g-send-msg-btn-bg']"))
+            )
             if send_btn.is_enabled():
                 send_btn.click()
                 self.log(LogEntry("点击发送按钮"))
                 return
         except:
             pass
+        # 备用：通过 aria-label
         try:
-            send_btn = self.driver.find_element(By.XPATH, "//button[contains(@class,'send')]")
+            send_btn = self.driver.find_element(By.XPATH, "//button[@aria-label='发送']")
             if send_btn.is_enabled():
                 send_btn.click()
-                self.log(LogEntry("点击发送按钮 (class send)"))
+                self.log(LogEntry("点击发送按钮 (aria-label)"))
                 return
         except:
             pass
-        # 尝试模拟回车
+        # 模拟回车
         try:
             ta = self.driver.find_element(By.CSS_SELECTOR, "textarea")
             self.driver.execute_script("""
@@ -632,14 +624,12 @@ class WorkerThread(threading.Thread):
             self.log(LogEntry(f"发送消息失败: {e}", level="error"))
 
     def _doubao_wait_for_answer(self, idx, timeout=300):
-        """等待豆包的助手回答，基于消息列表新增内容"""
-        # 获取当前最后一条消息（可能是用户刚刚发出的）
         def get_last_assistant_text():
-            # 尝试多种选择器定位助手消息
+            # 尝试获取普通 markdown 回答
             selectors = [
+                "div[data-message-id] div[class*='markdown']",
                 "div[class*='assistant-message']",
                 "div[class*='message-receive']",
-                "div[data-message-id] div[class*='markdown']",
                 "//div[contains(@class,'message') and contains(@class,'assistant')]//div[contains(@class,'markdown')]"
             ]
             for sel in selectors:
@@ -654,39 +644,80 @@ class WorkerThread(threading.Thread):
                     continue
             return ""
 
+        def get_document_answer():
+            # 检测是否有文档生成卡片（产品卡片）
+            try:
+                card = self.driver.find_element(By.CSS_SELECTOR, "div[class*='product-card']")
+                # 检查文档状态
+                status_attr = card.find_element(By.XPATH, "..").get_attribute("data-status")
+                if status_attr == "finished":
+                    title_elem = card.find_element(By.CSS_SELECTOR, ".card-title-text-ehySI8")
+                    title = title_elem.text if title_elem else ""
+                    # 文档生成完成后，后面可能还有普通回答（追问部分），一起获取
+                    after_text = get_last_assistant_text()
+                    # 去重：如果 after_text 已经包含 title，直接返回 after_text
+                    if title and title not in after_text:
+                        return f"【文档】{title}\n\n{after_text}"
+                    else:
+                        return after_text if after_text else title
+                else:
+                    return None  # 尚未完成
+            except:
+                return None
+
         self.log(LogEntry("等待豆包回答...", level="progress"))
-        start_text = get_last_assistant_text()
         start_time = time.time()
         screenshot_taken = False
-        # 等待开始输出（文本变化）
+        last_text = ""
+        stable_count = 0
+
+        # 首先等待开始输出（文本变化或文档开始生成）
         while time.time() - start_time < 60:
             if self.stop_event and self.stop_event.is_set():
                 return ""
+            # 优先检查文档卡片
+            doc_ans = get_document_answer()
+            if doc_ans is not None:
+                self.log(LogEntry("检测到文档生成完成", level="progress"))
+                if not screenshot_taken:
+                    ss_path = take_screenshot(self.driver, self.log_dir, f"doubao_doc_idx{idx}")
+                    self.log(LogEntry("文档生成截图", image_path=ss_path, level="info", group="progress_detail", index=idx))
+                    screenshot_taken = True
+                # 文档已经完成，直接返回
+                return doc_ans
+            # 检查普通回答
             current = get_last_assistant_text()
-            if len(current) > 0 and (start_text == "" or current != start_text):
+            if len(current) > 0 and (last_text == "" or current != last_text):
                 self.log(LogEntry("检测到豆包开始输出内容", level="progress"))
                 if not screenshot_taken:
                     ss_path = take_screenshot(self.driver, self.log_dir, f"doubao_start_idx{idx}")
                     self.log(LogEntry("开始输出截图", image_path=ss_path, level="info", group="progress_detail", index=idx))
                     screenshot_taken = True
+                last_text = current
                 break
             time.sleep(0.5)
         else:
-            self.log(LogEntry("等待输出超时，可能失败", level="warn"))
-            return get_last_assistant_text()
+            ss_path = take_screenshot(self.driver, self.log_dir, f"doubao_timeout_idx{idx}")
+            self.log(LogEntry("等待输出超时", image_path=ss_path, level="warn", index=idx))
+            return get_last_assistant_text() or ""
 
-        # 等待内容稳定（3秒内无变化）
-        last_text = get_last_assistant_text()
-        stable_count = 0
+        # 等待内容稳定（3秒无变化）
         stable_start = time.time()
         while time.time() - stable_start < timeout:
             if self.stop_event and self.stop_event.is_set():
                 return last_text
             time.sleep(1.0)
+            # 再次检查文档卡片（可能在输出过程中生成）
+            doc_ans = get_document_answer()
+            if doc_ans is not None:
+                self.log(LogEntry("检测到文档生成完成", level="progress"))
+                ss_path = take_screenshot(self.driver, self.log_dir, f"doubao_doc_stable_idx{idx}")
+                self.log(LogEntry("文档稳定截图", image_path=ss_path, level="info", index=idx))
+                return doc_ans
             current = get_last_assistant_text()
             if current == last_text and len(current) > 0:
                 stable_count += 1
-                if stable_count >= 3:   # 3秒无变化认为稳定
+                if stable_count >= 3:
                     self.log(LogEntry("豆包回答已稳定", level="progress"))
                     ss_path = take_screenshot(self.driver, self.log_dir, f"doubao_stable_idx{idx}")
                     self.log(LogEntry("稳定截图", image_path=ss_path, level="info", index=idx))
@@ -699,13 +730,31 @@ class WorkerThread(threading.Thread):
         return last_text
 
     # ----------------------------- 公共辅助 -----------------------------
-    def _format_prompt(self, history, question):
+    def _format_prompt(self, row):
+        """根据行数据构建完整提示词"""
         parts = []
         if self.prefix:
             parts.append(self.prefix)
-        if self.has_context and history is not None:
-            parts.append(f"{self.context_label}：\n\n{history}")
+
+        # 依次拼接所有附加列
+        for col_cfg in self.additional_cols:
+            col_name = col_cfg["col"]
+            label = col_cfg["label"]
+            if col_name in row.index:
+                val = row[col_name]
+            else:
+                val = ""
+            val_str = str(val) if pd.notna(val) else ""
+            if val_str.strip():
+                parts.append(f"{label}：\n\n{val_str}")
+
+        # 问题列（必需）
+        if self.question_col in row.index:
+            question = str(row[self.question_col]) if pd.notna(row[self.question_col]) else ""
+        else:
+            question = ""
         parts.append(f"{self.question_label}：\n\n{question}")
+
         return "\n\n".join(parts)
 
     def should_skip_row(self, df, idx):
